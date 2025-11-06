@@ -30,6 +30,7 @@ class PickRopeEnv(BaseEnv):
         robot_init_qpos_noise: float = 0.02,
         num_links: int = 20,
         link_half_size: float = 0.01,
+        link_gap: float = 0.001,
         joint_limit_deg: float = 90.0,
         joint_damping: float = 2.0,
         joint_friction: float = 0.02,
@@ -41,6 +42,7 @@ class PickRopeEnv(BaseEnv):
         # Rope params
         self.num_links = int(num_links)
         self.link_half_size = float(link_half_size)
+        self.link_gap = float(link_gap)
         self.joint_limit = float(np.deg2rad(joint_limit_deg))
         self.joint_damping = float(joint_damping)
         self.joint_friction = float(joint_friction)
@@ -75,6 +77,7 @@ class PickRopeEnv(BaseEnv):
     def _build_rope_articulation(self):
         # Build an articulation with N box links connected by revolute joints
         builder = self.scene.create_articulation_builder()
+        # Keep self-collisions disabled by default for stability and speed; we also add a small gap between links
         builder.disable_self_collisions = True
 
         s = self.link_half_size
@@ -103,9 +106,10 @@ class PickRopeEnv(BaseEnv):
             child.add_box_visual(half_size=[s, s, s], material=rope_mat)
             child.set_joint_name(f"joint_{i}")
 
-            # Connect at face centers along +X / -X
-            pose_in_parent = sapien.Pose(p=[s, 0.0, 0.0], q=joint_frame_q)
-            pose_in_child = sapien.Pose(p=[-s, 0.0, 0.0], q=joint_frame_q)
+            # Connect near face centers along +X / -X but with a small gap to avoid initial intersection
+            gap = self.link_gap
+            pose_in_parent = sapien.Pose(p=[s + gap, 0.0, 0.0], q=joint_frame_q)
+            pose_in_child = sapien.Pose(p=[-s - gap, 0.0, 0.0], q=joint_frame_q)
             child.set_joint_properties(
                 type="revolute",
                 limits=[[-self.joint_limit, self.joint_limit]],
@@ -138,20 +142,22 @@ class PickRopeEnv(BaseEnv):
             q = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(b, 1)
             self.rope.set_pose(Pose.create_from_pq(p=p, q=q))
 
-            # Initialize joints into an S-shaped curve
+            # Initialize joints into a randomized rope-like curve per environment
             # Number of active hinge joints equals number of links - 1
             num_active = len(self.rope.get_active_joints())
             if num_active > 0:
-                # Create a sinusoidal profile across joints
-                t = torch.linspace(0, 2 * np.pi, num_active, device=self.device)
-                amplitude = 0.6 * self.joint_limit
-                base_angles = amplitude * torch.sin(t)
-                # Small per-episode jitter for diversity
-                noise = (torch.rand((b, num_active), device=self.device) - 0.5) * (
-                    0.05 * self.joint_limit
-                )
+                # Per-env random amplitude, cycles, and phase for a smooth base
+                j_axis = torch.linspace(0.0, 1.0, num_active, device=self.device)[None, :].repeat(b, 1)
+                amp = (0.3 + 0.5 * torch.rand((b, 1), device=self.device)) * self.joint_limit
+                cycles = 0.5 + 2.5 * torch.rand((b, 1), device=self.device)
+                phase = 2 * np.pi * torch.rand((b, 1), device=self.device)
+                base = amp * torch.sin(phase + 2 * np.pi * cycles * j_axis)
+                # Add a smooth random drift via integrated noise
+                noise = torch.randn((b, num_active), device=self.device) * (0.08 * self.joint_limit)
+                smooth = torch.cumsum(noise, dim=1) / 4.0
+                angles = torch.clamp(base + 0.2 * smooth, -self.joint_limit, self.joint_limit)
                 qpos = torch.zeros((b, int(self.rope.max_dof)), device=self.device)
-                qpos[:, :num_active] = base_angles[None, :] + noise
+                qpos[:, :num_active] = angles
                 self.rope.set_qpos(qpos)
 
     def _rope_link_positions(self) -> torch.Tensor:

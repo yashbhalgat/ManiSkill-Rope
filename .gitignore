@@ -5,6 +5,7 @@ _ext
 *.so
 build/
 dist/
+runs/
 *.egg-info/
 
 # ipython/jupyter notebooks
