@@ -163,16 +163,27 @@ class Agent(nn.Module):
         )
         self.actor_logstd = nn.Parameter(torch.zeros(1, n_act, device=device))
 
+    @staticmethod
+    def _sanitize(x: torch.Tensor) -> torch.Tensor:
+        return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
     def get_value(self, x):
+        x = self._sanitize(x)
         return self.critic(x)
 
     def get_action_and_value(self, obs, action=None):
-        action_mean = self.actor_mean(obs)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
+        obs = self._sanitize(obs)
+        action_mean = self._sanitize(self.actor_mean(obs))
+        if not torch.isfinite(action_mean).all():
+            action_mean = torch.nan_to_num(action_mean, nan=0.0, posinf=0.0, neginf=0.0)
+        # robust std computation
+        action_logstd = torch.clamp(self.actor_logstd, min=-10.0, max=2.0).expand_as(action_mean)
         action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
+        action_std = torch.nan_to_num(action_std, nan=1e-3, posinf=1e-3, neginf=1e-3)
+        action_std = torch.clamp(action_std, min=1e-6, max=10.0)
+        probs = Normal(action_mean, action_std, validate_args=False)
         if action is None:
-            action = action_mean + action_std * torch.randn_like(action_mean)
+            action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(obs)
 
 class Logger:
@@ -383,6 +394,7 @@ if __name__ == "__main__":
     def step_func(action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # NOTE (stao): change here for gpu env
         next_obs, reward, terminations, truncations, info = envs.step(action)
+        next_obs = torch.nan_to_num(next_obs, nan=0.0, posinf=0.0, neginf=0.0)
         next_done = torch.logical_or(terminations, truncations)
         return next_obs, reward, next_done, info
 
@@ -423,6 +435,7 @@ if __name__ == "__main__":
     start_time = time.time()
     container_local = None
     next_obs = envs.reset()[0]
+    next_obs = torch.nan_to_num(next_obs, nan=0.0, posinf=0.0, neginf=0.0)
     next_done = torch.zeros(args.num_envs, device=device, dtype=torch.bool)
     pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
 
@@ -433,11 +446,16 @@ if __name__ == "__main__":
         if iteration % args.eval_freq == 1:
             stime = time.perf_counter()
             eval_obs, _ = eval_envs.reset()
+            eval_obs = torch.nan_to_num(eval_obs, nan=0.0, posinf=0.0, neginf=0.0)
             eval_metrics = defaultdict(list)
             num_episodes = 0
             for _ in range(args.num_eval_steps):
                 with torch.no_grad():
-                    eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(agent.actor_mean(eval_obs))
+                    with torch.no_grad():
+                        act_mean = agent.actor_mean(eval_obs)
+                        act_mean = torch.nan_to_num(act_mean, nan=0.0, posinf=0.0, neginf=0.0)
+                    eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(act_mean)
+                    eval_obs = torch.nan_to_num(eval_obs, nan=0.0, posinf=0.0, neginf=0.0)
                     if "final_info" in eval_infos:
                         mask = eval_infos["_final_info"]
                         num_episodes += mask.sum()
