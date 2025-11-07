@@ -129,6 +129,8 @@ class PickRopeEnv(BaseEnv):
         self.table_scene = TableSceneBuilder(self, robot_init_qpos_noise=self.robot_init_qpos_noise)
         self.table_scene.build()
         self._build_rope_articulation()
+        # Track whether each env has ever succeeded in the current episode (for success_once metric)
+        self._success_once = torch.zeros(self.scene.num_envs, dtype=torch.bool, device=self.device)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         with torch.device(self.device):
@@ -160,6 +162,9 @@ class PickRopeEnv(BaseEnv):
                 qpos = torch.zeros((b, int(self.rope.max_dof)), device=self.device)
                 qpos[:, :num_active] = angles
                 self.rope.set_qpos(qpos)
+
+            # reset success-once flag for these envs
+            self._success_once[env_idx] = False
 
     def _rope_link_positions(self) -> torch.Tensor:
         ps = torch.stack([link.pose.p for link in self.rope.links], dim=0)
@@ -195,8 +200,11 @@ class PickRopeEnv(BaseEnv):
 
         is_robot_static = self.agent.is_static(0.2)
         success = is_grasped_any & lifted & is_robot_static
+        # accumulate success across the episode for compatibility with ppo_fast logging
+        self._success_once = torch.logical_or(self._success_once, success)
         return {
             "success": success,
+            "success_once": self._success_once,
             "is_grasped_any": is_grasped_any,
             "is_lifted": lifted,
             "is_robot_static": is_robot_static,

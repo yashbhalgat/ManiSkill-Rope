@@ -449,10 +449,15 @@ if __name__ == "__main__":
                 eval_metrics_mean[k] = mean
                 if logger is not None:
                     logger.add_scalar(f"eval/{k}", mean, global_step)
-            pbar.set_description(
-                f"success_once: {eval_metrics_mean['success_once']:.2f}, "
-                f"return: {eval_metrics_mean['return']:.2f}"
-            )
+            success_once_val = eval_metrics_mean.get('success_once', torch.tensor(float('nan')))
+            return_val = eval_metrics_mean.get('return', torch.tensor(float('nan')))
+            try:
+                pbar.set_description(
+                    f"success_once: {float(success_once_val):.2f}, return: {float(return_val):.2f}"
+                )
+            except Exception:
+                # Fallback if metrics are non-finite
+                pbar.set_description("evaluating...")
             if logger is not None:
                 eval_time = time.perf_counter() - stime
                 cumulative_times["eval_time"] += eval_time
