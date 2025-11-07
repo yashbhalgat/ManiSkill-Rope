@@ -149,18 +149,56 @@ class PickRopeEnv(BaseEnv):
             # Number of active hinge joints equals number of links - 1
             num_active = len(self.rope.get_active_joints())
             if num_active > 0:
-                # Per-env random amplitude, cycles, and phase for a smooth base
-                j_axis = torch.linspace(0.0, 1.0, num_active, device=self.device)[None, :].repeat(b, 1)
-                amp = (0.2 + 0.4 * torch.rand((b, 1), device=self.device)) * self.joint_limit
-                cycles = 0.5 + 2.5 * torch.rand((b, 1), device=self.device)
-                phase = 2 * np.pi * torch.rand((b, 1), device=self.device)
-                base = amp * torch.sin(phase + 2 * np.pi * cycles * j_axis)
-                # Add a smooth random drift via integrated noise
-                noise = torch.randn((b, num_active), device=self.device) * (0.08 * self.joint_limit)
-                smooth = torch.cumsum(noise, dim=1) / 4.0
-                angles = torch.clamp(base + 0.2 * smooth, -self.joint_limit, self.joint_limit)
+                link_len = 2 * self.link_half_size + 2 * self.link_gap
+                # Precompute indices mask to ignore adjacent links when checking distances
+                if num_active + 1 >= 3:
+                    idxs = torch.arange(self.num_links, device=self.device)
+                # Generate per-env shapes with rejection sampling to avoid self-collisions
+                accepted_angles = torch.zeros((b, num_active), device=self.device)
+                for bi in range(b):
+                    for _ in range(8):  # up to 8 attempts
+                        # Conservative parameters to reduce overlap probability
+                        amp = (0.1 + 0.2 * torch.rand(1, device=self.device)) * self.joint_limit
+                        cycles = 0.5 + 1.5 * torch.rand(1, device=self.device)
+                        phase = 2 * np.pi * torch.rand(1, device=self.device)
+                        j_axis = torch.linspace(0.0, 1.0, num_active, device=self.device)
+                        base = amp * torch.sin(phase + 2 * np.pi * cycles * j_axis)
+                        noise = torch.randn((num_active,), device=self.device) * (0.04 * self.joint_limit)
+                        smooth = torch.cumsum(noise, dim=0) / 4.0
+                        ang = torch.clamp(base + 0.2 * smooth, -self.joint_limit, self.joint_limit)
+
+                        # Approximate forward kinematics in plane to test self-overlap
+                        # link 0 center at (0,0); each subsequent link translates by rotated [link_len, 0]
+                        thetas = torch.zeros((self.num_links,), device=self.device)
+                        thetas[1:] = torch.cumsum(ang, dim=0)
+                        # cumulative rotation for each segment
+                        cos_t = torch.cos(thetas)
+                        sin_t = torch.sin(thetas)
+                        dx = link_len * cos_t
+                        dy = link_len * sin_t
+                        # centers as cumulative sum; link 0 at (0,0)
+                        xs = torch.cumsum(dx, dim=0)
+                        ys = torch.cumsum(dy, dim=0)
+                        # compute pairwise distances between non-adjacent links
+                        pts = torch.stack([xs, ys], dim=1)
+                        dmat = torch.cdist(pts, pts)
+                        # mask out i==j and adjacent pairs
+                        mask = torch.ones_like(dmat, dtype=torch.bool)
+                        mask.fill_(True)
+                        mask.fill_diagonal_(False)
+                        for k in range(self.num_links - 1):
+                            mask[k, k + 1] = False
+                            mask[k + 1, k] = False
+                        min_non_adj = dmat[mask].min() if mask.any() else torch.tensor(float('inf'), device=self.device)
+                        if min_non_adj > (2 * self.link_half_size + self.link_gap):
+                            accepted_angles[bi] = ang
+                            break
+                    else:
+                        # fallback: tiny curvature
+                        accepted_angles[bi] = torch.zeros_like(accepted_angles[bi])
+
                 qpos = torch.zeros((b, int(self.rope.max_dof)), device=self.device)
-                qpos[:, :num_active] = angles
+                qpos[:, :num_active] = accepted_angles
                 self.rope.set_qpos(qpos)
 
             # reset success-once flag for these envs
