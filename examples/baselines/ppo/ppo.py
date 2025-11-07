@@ -156,8 +156,11 @@ class Agent(nn.Module):
             action_mean = torch.nan_to_num(action_mean, nan=0.0, posinf=0.0, neginf=0.0)
         if deterministic:
             return action_mean
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.clamp(torch.exp(action_logstd), min=1e-6, max=10.0)
+        # robust std computation
+        action_logstd = torch.clamp(self.actor_logstd, min=-10.0, max=2.0).expand_as(action_mean)
+        action_std = torch.exp(action_logstd)
+        action_std = torch.nan_to_num(action_std, nan=1e-3, posinf=1e-3, neginf=1e-3)
+        action_std = torch.clamp(action_std, min=1e-6, max=10.0)
         probs = Normal(action_mean, action_std, validate_args=False)
         return probs.sample()
     def get_action_and_value(self, x, action=None):
@@ -165,8 +168,11 @@ class Agent(nn.Module):
         action_mean = self._sanitize(self.actor_mean(x))
         if not torch.isfinite(action_mean).all():
             action_mean = torch.nan_to_num(action_mean, nan=0.0, posinf=0.0, neginf=0.0)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.clamp(torch.exp(action_logstd), min=1e-6, max=10.0)
+        # robust std computation
+        action_logstd = torch.clamp(self.actor_logstd, min=-10.0, max=2.0).expand_as(action_mean)
+        action_std = torch.exp(action_logstd)
+        action_std = torch.nan_to_num(action_std, nan=1e-3, posinf=1e-3, neginf=1e-3)
+        action_std = torch.clamp(action_std, min=1e-6, max=10.0)
         probs = Normal(action_mean, action_std, validate_args=False)
         if action is None:
             action = probs.sample()
