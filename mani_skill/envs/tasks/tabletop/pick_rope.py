@@ -77,8 +77,8 @@ class PickRopeEnv(BaseEnv):
     def _build_rope_articulation(self):
         # Build an articulation with N box links connected by revolute joints
         builder = self.scene.create_articulation_builder()
-        # Keep self-collisions disabled by default for stability and speed; we also add a small gap between links
-        builder.disable_self_collisions = True
+        # Enable self-collisions for physical correctness
+        builder.disable_self_collisions = False
 
         s = self.link_half_size
         # Rotate joint frames so hinge axis becomes Z (90 deg about Y), per robel example
@@ -136,9 +136,10 @@ class PickRopeEnv(BaseEnv):
             self.table_scene.initialize(env_idx)
 
             # Randomize rope root pose on table
-            p = torch.zeros((b, 3))
+        p = torch.zeros((b, 3))
             p[..., 0:2] = torch.rand((b, 2)) * 0.20 - 0.10
-            p[..., 2] = self.link_half_size + 1e-3
+        # Give some clearance above the table to avoid initial contact explosions
+        p[..., 2] = self.link_half_size + 0.03
             q = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(b, 1)
             self.rope.set_pose(Pose.create_from_pq(p=p, q=q))
 
@@ -148,7 +149,7 @@ class PickRopeEnv(BaseEnv):
             if num_active > 0:
                 # Per-env random amplitude, cycles, and phase for a smooth base
                 j_axis = torch.linspace(0.0, 1.0, num_active, device=self.device)[None, :].repeat(b, 1)
-                amp = (0.3 + 0.5 * torch.rand((b, 1), device=self.device)) * self.joint_limit
+                amp = (0.2 + 0.4 * torch.rand((b, 1), device=self.device)) * self.joint_limit
                 cycles = 0.5 + 2.5 * torch.rand((b, 1), device=self.device)
                 phase = 2 * np.pi * torch.rand((b, 1), device=self.device)
                 base = amp * torch.sin(phase + 2 * np.pi * cycles * j_axis)

@@ -141,21 +141,33 @@ class Agent(nn.Module):
         )
         self.actor_logstd = nn.Parameter(torch.ones(1, np.prod(envs.single_action_space.shape)) * -0.5)
 
+    @staticmethod
+    def _sanitize(x: torch.Tensor) -> torch.Tensor:
+        # Replace NaN/Inf with finite values to avoid crashing distribution construction
+        return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
     def get_value(self, x):
+        x = self._sanitize(x)
         return self.critic(x)
     def get_action(self, x, deterministic=False):
-        action_mean = self.actor_mean(x)
+        x = self._sanitize(x)
+        action_mean = self._sanitize(self.actor_mean(x))
+        if not torch.isfinite(action_mean).all():
+            action_mean = torch.nan_to_num(action_mean, nan=0.0, posinf=0.0, neginf=0.0)
         if deterministic:
             return action_mean
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
+        action_std = torch.clamp(torch.exp(action_logstd), min=1e-6, max=10.0)
+        probs = Normal(action_mean, action_std, validate_args=False)
         return probs.sample()
     def get_action_and_value(self, x, action=None):
-        action_mean = self.actor_mean(x)
+        x = self._sanitize(x)
+        action_mean = self._sanitize(self.actor_mean(x))
+        if not torch.isfinite(action_mean).all():
+            action_mean = torch.nan_to_num(action_mean, nan=0.0, posinf=0.0, neginf=0.0)
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
+        action_std = torch.clamp(torch.exp(action_logstd), min=1e-6, max=10.0)
+        probs = Normal(action_mean, action_std, validate_args=False)
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
@@ -256,7 +268,9 @@ if __name__ == "__main__":
     global_step = 0
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
+    next_obs = torch.nan_to_num(next_obs, nan=0.0, posinf=0.0, neginf=0.0)
     eval_obs, _ = eval_envs.reset(seed=args.seed)
+    eval_obs = torch.nan_to_num(eval_obs, nan=0.0, posinf=0.0, neginf=0.0)
     next_done = torch.zeros(args.num_envs, device=device)
     print(f"####")
     print(f"args.num_iterations={args.num_iterations} args.num_envs={args.num_envs} args.num_eval_envs={args.num_eval_envs}")
@@ -276,11 +290,13 @@ if __name__ == "__main__":
         if iteration % args.eval_freq == 1:
             print("Evaluating")
             eval_obs, _ = eval_envs.reset()
+            eval_obs = torch.nan_to_num(eval_obs, nan=0.0, posinf=0.0, neginf=0.0)
             eval_metrics = defaultdict(list)
             num_episodes = 0
             for _ in range(args.num_eval_steps):
                 with torch.no_grad():
                     eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(agent.get_action(eval_obs, deterministic=True))
+                    eval_obs = torch.nan_to_num(eval_obs, nan=0.0, posinf=0.0, neginf=0.0)
                     if "final_info" in eval_infos:
                         mask = eval_infos["_final_info"]
                         num_episodes += mask.sum()
@@ -319,6 +335,7 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(clip_action(action))
+            next_obs = torch.nan_to_num(next_obs, nan=0.0, posinf=0.0, neginf=0.0)
             next_done = torch.logical_or(terminations, truncations).to(torch.float32)
             rewards[step] = reward.view(-1) * args.reward_scale
 
