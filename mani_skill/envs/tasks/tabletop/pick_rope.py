@@ -136,10 +136,10 @@ class PickRopeEnv(BaseEnv):
             self.table_scene.initialize(env_idx)
 
             # Randomize rope root pose on table
-        p = torch.zeros((b, 3))
+            p = torch.zeros((b, 3))
             p[..., 0:2] = torch.rand((b, 2)) * 0.20 - 0.10
-        # Give some clearance above the table to avoid initial contact explosions
-        p[..., 2] = self.link_half_size + 0.03
+            # Give some clearance above the table to avoid initial contact explosions
+            p[..., 2] = self.link_half_size + 0.03
             q = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(b, 1)
             self.rope.set_pose(Pose.create_from_pq(p=p, q=q))
 
